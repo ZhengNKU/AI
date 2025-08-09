@@ -1,19 +1,27 @@
 **EntryPoints**:
-离线批量推理：vllm/entrypoints/api_server.py 或 LLM.generate()（vllm/llm.py）。
+离线批量推理：vllm/entrypoints/api_server.py 或 LLM.generate()（vllm/llm.py）
+
 在线服务：vllm/entrypoints/openai/api_server.py（启动 OpenAI 兼容 API）
 
 
 # 1. 在线服务
 参考链接：https://zhuanlan.zhihu.com/p/1896477903434258024 
+
 python -m vllm.entrypoints.openai.api_server --model modelname
 
 ## 1.1 api_server关键步骤解读
 ### 1.1.1 参数解析
+
 源码：make_arg_parser
+
 make_arg_parser 是 vLLM API 服务器的 命令行参数配置中心，负责定义所有与 API 服务相关的配置选项。它扩展了 FlexibleArgumentParser，支持以下功能：
+
 服务网络配置（如主机、端口、SSL）
+
 请求处理控制（如跨域、中间件、日志）
+
 模型扩展功能（如 LoRA、Prompt Adapter）
+
 调试与监控（如日志级别、请求跟踪）
 
 ***基础服务配置***
