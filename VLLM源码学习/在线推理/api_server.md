@@ -206,9 +206,7 @@ async def create_chat_completion(request: ChatCompletionRequest,
     return StreamingResponse(content=generator, media_type="text/event-stream")
 ```
 + 查询FastAPI应用容器状态
-
 + 处理请求
-
 + 根据request.stream参数决定返回类型
 
 ### 2.1.1 请求处理核心
