@@ -155,6 +155,77 @@ async def run_server_worker(listen_address,
         sock.close()
 ```
 
+## 2.1 OpenAI接口
+**默认暴露的OpenAI接口**
+
+| 接口 | 功能描述 | 示例调用方式 |
+| --- | --- | --- |
+| POST /v1/completions | 文本补全（类 GPT-3） | `curl -X POST http://localhost:8000/v1/completions -d '{"prompt":"Hello"}'` |
+| POST /v1/chat/completions | 聊天补全（类 ChatGPT） | 需传递 `messages` 数组 |
+| POST /v1/embeddings | 文本向量化 | 需传递 `input` 文本 |
+| GET /v1/models | 列出可用模型 | 返回当前加载的模型信息 |
+
+```python
+@router.post("/v1/chat/completions",
+             dependencies=[Depends(validate_json_request)],
+             responses={
+                 HTTPStatus.OK.value: {
+                     "content": {
+                         "text/event-stream": {}
+                     }
+                 },
+                 HTTPStatus.BAD_REQUEST.value: {
+                     "model": ErrorResponse
+                 },
+                 HTTPStatus.NOT_FOUND.value: {
+                     "model": ErrorResponse
+                 },
+                 HTTPStatus.INTERNAL_SERVER_ERROR.value: {
+                     "model": ErrorResponse
+                 }
+             })
+@with_cancellation
+@load_aware_call
+async def create_chat_completion(request: ChatCompletionRequest,
+                                 raw_request: Request):
+    # 调用chat(raw_request) 获取 OpenAIServingChat 实例状态，用于处理聊天补全请求。
+    handler = chat(raw_request)
+    if handler is None:
+        return base(raw_request).create_error_response(
+            message="The model does not support Chat Completions API")
+    # 调用 handler.create_chat_completion 方法，处理聊天补全请求
+    generator = await handler.create_chat_completion(request, raw_request)
+    # 根据 generator 的类型返回不同的响应
+    if isinstance(generator, ErrorResponse):
+        return JSONResponse(content=generator.model_dump(),
+                            status_code=generator.code)
+
+    elif isinstance(generator, ChatCompletionResponse):
+        return JSONResponse(content=generator.model_dump())
+
+    return StreamingResponse(content=generator, media_type="text/event-stream")
+```
++ 查询FastAPI应用容器状态
+
++ 处理请求
+
++ 根据request.stream参数决定返回类型
+
+### 2.1.1 请求处理核心
+**源码：generator = await handler.create_chat_completion(request, raw_request)**
+
+该函数实现了与 OpenAI Chat Completion API 兼容的接口，支持：
+
++ 流式和非流式响应
+
++ 工具调用(tool calls)功能
+
++ LoRA 适配器和提示适配器
+
++ 多种解码策略(beam search 和采样)
+
+<img width="6639" height="4932" alt="image" src="https://github.com/user-attachments/assets/0a1e6e5c-d487-47b0-b6d2-0295247c46d6" />
+
 
 
 
