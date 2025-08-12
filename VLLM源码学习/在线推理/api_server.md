@@ -65,6 +65,92 @@ make_arg_parser 是 vLLM API 服务器的 命令行参数配置中心，负责�
 | `--enable-request-id-headers` | bool | False   | 在响应中添加X-Request-Id头                                          |
 | `--enable-server-load-tracking` | bool | False | 启用服务器负载指标监控                                               |
 
+### 1.1.2 run_server
+
+**（1）预启动配置函数** 
+
+**源码：listen_address, sock = setup_server(args)**
+
++ 参数校验
+
++ 防止端口竞争的安全措施：调用create_server_socket方法创建一个服务器套接字，绑定到指定的主机和端口。需要确保在引擎初始化之前绑定端口, 避免与其他进程（如Ray）发生竞争。
+
++ 调整系统的文件描述符限制，避免高并发请求时因资源不足导致问题
+
++ 信号处理设置
+
++ 监听地址格式化
+
+
+**（2）启动一个独立的 vLLM API 服务 Worker**
+
+**源码：await run_server_worker(listen_address, sock, args, \*\*uvicorn_kwargs)**
+
++ 调用 build_async_engine_client 方法异步创建引擎客户端，用于与后端引擎通信
+
++ 构建 FastAPI 应用程序，配置路由、中间件和异常处理
+
++ init_app_state初始化 FastAPI 应用的状态管理。包括支持单模型多别名、通过 max_log_len 限制日志中提示文本长度，防止敏感信息泄露、聊天模板解析（当自定义模板与 HuggingFace 官方模板不一致时发出警告）、LoRA 模块合并、创建模型管理实例并初始化静态 LoRA、为后续实现基于负载的自动扩缩容预留接口
+
++ 调用serve_http方法启动Uvicorn HTTP 服务，并返回一个任务对象，用于等待服务器关闭。包括路由信息打印、Uvicorn 初始化、主服务任务和watchdog任务异步启动、SSL 热更新、优雅关闭
+
++ 释放端口
+
+```python
+async def run_server_worker(listen_address,
+                            sock,
+                            args,
+                            client_config=None,
+                            **uvicorn_kwargs) -> None:
+    """Run a single API server worker."""
+
+    if args.tool_parser_plugin and len(args.tool_parser_plugin) > 3:
+        ToolParserManager.import_tool_parser(args.tool_parser_plugin)
+
+    server_index = client_config.get("client_index", 0) if client_config else 0
+
+    # Load logging config for uvicorn if specified
+    # 配置日志文件格式
+    log_config = load_log_config(args.log_config_file)
+    if log_config is not None:
+        uvicorn_kwargs['log_config'] = log_config
+
+    async with build_async_engine_client(args, client_config) as engine_client:
+        # 构建 FastAPI 应用程序，配置路由、中间件和异常处理
+        app = build_app(args)
+            
+        # 从vllm引擎客户端获取配置
+        vllm_config = await engine_client.get_vllm_config()
+        # 初始化 FastAPI 应用的状态管理
+        await init_app_state(engine_client, vllm_config, app.state, args)
+
+        logger.info("Starting vLLM API server %d on %s", server_index,
+                    listen_address)
+        # 调用serve_http方法启动 HTTP 服务，并返回一个任务对象，用于等待服务器关闭
+        shutdown_task = await serve_http(
+            app,
+            sock=sock,
+            enable_ssl_refresh=args.enable_ssl_refresh,
+            host=args.host,
+            port=args.port,
+            log_level=args.uvicorn_log_level,
+            # NOTE: When the 'disable_uvicorn_access_log' value is True,
+            # no access log will be output.
+            access_log=not args.disable_uvicorn_access_log,
+            timeout_keep_alive=envs.VLLM_HTTP_TIMEOUT_KEEP_ALIVE,
+            ssl_keyfile=args.ssl_keyfile,
+            ssl_certfile=args.ssl_certfile,
+            ssl_ca_certs=args.ssl_ca_certs,
+            ssl_cert_reqs=args.ssl_cert_reqs,
+            **uvicorn_kwargs,
+        )
+
+    # NB: Await server shutdown only after the backend context is exited
+    try:
+        await shutdown_task
+    finally:
+        sock.close()
+```
 
 
 
