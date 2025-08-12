@@ -9,6 +9,9 @@
 
 python -m vllm.entrypoints.openai.api_server --model modelname
 
+<img width="4854" height="2193" alt="image" src="https://github.com/user-attachments/assets/0513162f-bcc5-4614-af24-a75411e74ca5" />
+
+
 ## 1.1 api_server关键步骤解读
 ### 1.1.1 参数解析
 
