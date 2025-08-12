@@ -75,13 +75,9 @@ make_arg_parser 是 vLLM API 服务器的 命令行参数配置中心，负责�
 **源码：listen_address, sock = setup_server(args)**
 
 + 参数校验
-
 + 防止端口竞争的安全措施：调用create_server_socket方法创建一个服务器套接字，绑定到指定的主机和端口。需要确保在引擎初始化之前绑定端口, 避免与其他进程（如Ray）发生竞争。
-
 + 调整系统的文件描述符限制，避免高并发请求时因资源不足导致问题
-
 + 信号处理设置
-
 + 监听地址格式化
 
 
@@ -215,11 +211,8 @@ async def create_chat_completion(request: ChatCompletionRequest,
 该函数实现了与 OpenAI Chat Completion API 兼容的接口，支持：
 
 + 流式和非流式响应
-
 + 工具调用(tool calls)功能
-
 + LoRA 适配器和提示适配器
-
 + 多种解码策略(beam search 和采样)
 
 <img width="6639" height="4932" alt="image" src="https://github.com/user-attachments/assets/0a1e6e5c-d487-47b0-b6d2-0295247c46d6" />
