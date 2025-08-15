@@ -75,6 +75,14 @@ def try_get_generation_config(self) -> dict[str, Any]:
 | `image_quality`  | `int`    | 图像输入的质量等级（1-100，影响图像编码精度） |
 | `audio_temp`     | `float`  | 音频生成的temperature（独立于文本temperature） |
 
+### 1.2.2 InputPreprocessor
+InputPreprocessor 是 VLLM 中负责统一处理输入数据的核心组件，主要完成：
+
++ 文本标准化：分词、截断、特殊标记处理
++ 多模态适配：图像/音频等非文本输入的编码转换
++ LoRA 适配：动态切换分词器应对不同的 LoRA 适配器
++ 输入验证：确保输入符合模型要求
+
 
 
 
