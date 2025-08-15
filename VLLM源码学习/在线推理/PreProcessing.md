@@ -25,6 +25,41 @@ vllm_config创建时机：
 vllm_config = engine_args.create_engine_config(usage_context=usage_context)
 ```
 
+## 1.2 单例初始化
+
+部分参数初始化不直接从全局容器vllm_config获取，需要动态处理
+
+### 1.2.1 动态获取模型生成配置
+从模型配置中提取生成参数（如温度、top_p等），用于后续的推理请求默认值，返回字典如 {"temperature": 0.7, "top_p": 0.9}
+```python
+self.generation_config_fields = self.model_config.try_get_generation_config()
+
+def try_get_generation_config(self) -> dict[str, Any]:
+    # 如果配置来源是 "auto"/"vllm"，则从hf获取模型配置
+    if self.generation_config in ("auto", "vllm"):
+        config = try_get_generation_config(
+            self.hf_config_path or self.model,
+            trust_remote_code=self.trust_remote_code,
+            revision=self.revision,
+        )
+    else:
+    # 显示指定模型配置
+        config = try_get_generation_config(
+            self.generation_config,
+            trust_remote_code=self.trust_remote_code,
+        )
+
+    if config is None:
+        return {}
+
+    return config.to_diff_dict()
+```
+
+**附：模型生成配置参数介绍**
+
+
+
+
 
 
 
