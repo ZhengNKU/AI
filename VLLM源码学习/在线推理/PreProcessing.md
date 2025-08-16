@@ -180,6 +180,7 @@ def preprocess(
 + 哈希缓存：生成输入特征哈希以优化重复计算
 
 **Decoder-only模型处理:**
+
 <img width="310" height="446" alt="image" src="https://github.com/user-attachments/assets/4c743f44-850b-4779-b6cf-c03d9c13edfc" />
 
 ### 2.2.2 input_preprocessor.preprocess后多模态的处理
