@@ -98,6 +98,7 @@ OpenAI接口访问时执行。使用beam search与否前处理方法不同。
 /v1/chat/completions -> create_chat_completion -> self.engine_client.generate(不使用beam search) -> generate(async_llm.py) -> add_request -> process_inputs
 
 **目的**
+
 input转换为EngineCoreRequest
 
 **源码**
