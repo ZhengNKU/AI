@@ -97,6 +97,9 @@ OpenAI接口访问时执行。使用beam search与否前处理方法不同。
 
 /v1/chat/completions -> create_chat_completion -> self.engine_client.generate(不使用beam search) -> generate(async_llm.py) -> add_request -> process_inputs
 
+**目的**
+input转换为EngineCoreRequest
+
 **源码**
 ```python
 prompt_str, request = self.processor.process_inputs(
@@ -126,6 +129,7 @@ prompt_str, request = self.processor.process_inputs(
 4. 检查平台兼容性
 5. 采样参数处理，包括自动计算最大生成长度（总长度限制减去输入长度）、合并模型默认生成配置（如 eos_token_id）
 6. 多模态数据排序与缓存，详见2.2.2
+7. 返回EngineCoreRequest
 
 ### 2.2.1 input_preprocessor.preprocess
 **源码**
@@ -175,9 +179,21 @@ def preprocess(
 这段代码是 VLLM 输入预处理的核心逻辑，负责将原始输入（文本/多模态）转换为模型可处理的标准化格式。主要完成：
 
 + 输入路由：根据模型类型（Encoder-Decoder 或 Decoder-only）选择处理路径
-+ 多模态支持：处理图像/视频等非文本输入
-+ LoRA 适配：动态切换分词器
-+ 哈希缓存：生成输入特征哈希以优化重复计算
+
+Encoder-Decoder输出示例：
+```json
+{
+    "encoder": {
+        "type": "text",
+        "prompt_token_ids": [1, 34, 56, 2],  # 编码器输入token IDs
+        "multi_modal_data": None
+    },
+    "decoder": {
+        "type": "text",
+        "prompt_token_ids": [0]  # 解码器起始标记
+    }
+}
+```
 
 **Decoder-only模型处理:**
 
