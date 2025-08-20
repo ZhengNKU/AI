@@ -176,10 +176,7 @@ class MPClient(EngineCoreClient):
                 self._finalizer()
 
 ```
-<img width="1358" height="3991" alt="image" src="https://github.com/user-attachments/assets/f3195ce1-7476-4da8-80aa-80d3b7aaf928" />
-
-
-
+<img width="679" height="1995" alt="image" src="https://github.com/user-attachments/assets/f3195ce1-7476-4da8-80aa-80d3b7aaf928" />
 
 ## 1.2 不同进程启动策略
 （1）没有启用数据并行，只有一个模型副本在运行
