@@ -58,7 +58,152 @@ sampling_params.update_from_generation_config(
 + 处理eos_token_id，update_from_generation_config
 + 将eos_token_id作为EngineCoreRequest参数返回
 
-## 2.1 update_from_generation_config
+## 2.1 get_tokenizer
+**调用链**
+get_eos_token_id -> get_lora_tokenizer -> get_lora_tokenizer -> get_tokenizer
+**源码**
+```python
+def get_tokenizer(
+    tokenizer_name: Union[str, Path],
+    *args,
+    tokenizer_mode: str = "auto",
+    trust_remote_code: bool = False,
+    revision: Optional[str] = None,
+    download_dir: Optional[str] = None,
+    **kwargs,
+) -> AnyTokenizer:
+    """Gets a tokenizer for the given model name via HuggingFace or ModelScope.
+    """
+    if envs.VLLM_USE_MODELSCOPE:
+        # download model from ModelScope hub,
+        # lazy import so that modelscope is not required for normal use.
+        # pylint: disable=C.
+        from modelscope.hub.snapshot_download import snapshot_download
+
+        # avoid circuit import
+        from vllm.model_executor.model_loader.weight_utils import get_lock
+
+        # Only set the tokenizer here, model will be downloaded on the workers.
+        if not os.path.exists(tokenizer_name):
+            # Use file lock to prevent multiple processes from
+            # downloading the same file at the same time.
+            with get_lock(tokenizer_name, download_dir):
+                tokenizer_path = snapshot_download(
+                    model_id=tokenizer_name,
+                    cache_dir=download_dir,
+                    revision=revision,
+                    local_files_only=huggingface_hub.constants.HF_HUB_OFFLINE,
+                    # Ignore weights - we only need the tokenizer.
+                    ignore_file_pattern=[".*.pt", ".*.safetensors", ".*.bin"])
+                tokenizer_name = tokenizer_path
+
+    # 强制使用慢速但兼容性好的分词器
+    if tokenizer_mode == "slow":
+        if kwargs.get("use_fast", False):
+            raise ValueError(
+                "Cannot use the fast tokenizer in slow tokenizer mode.")
+        kwargs["use_fast"] = False
+
+    if "truncation_side" not in kwargs:
+        kwargs["truncation_side"] = "left"
+
+    # Separate model folder from file path for GGUF models
+    # GGUF文件格式需要额外处理，分离文件和路径
+    is_gguf = check_gguf_file(tokenizer_name)
+    if is_gguf:
+        kwargs["gguf_file"] = Path(tokenizer_name).name
+        tokenizer_name = Path(tokenizer_name).parent
+
+    # if tokenizer is from official mistral org
+    is_from_mistral_org = str(tokenizer_name).split("/")[0] == "mistralai"
+    # 选择tokenizer模式
+    if is_from_mistral_org and tokenizer_mode != "mistral":
+        warnings.warn(
+            'It is strongly recommended to run mistral models with '
+            '`--tokenizer-mode "mistral"` to ensure correct '
+            'encoding and decoding.',
+            FutureWarning,
+            stacklevel=2)
+
+    tokenizer: AnyTokenizer
+    # tokenizer模式为mistral，需要特殊的分词处理方式
+    if tokenizer_mode == "mistral":
+        tokenizer = MistralTokenizer.from_pretrained(str(tokenizer_name),
+                                                     revision=revision)
+    # tokenizer模式为custom，从注册表中获取tokenizer
+    elif tokenizer_mode == "custom":
+        from vllm.transformers_utils.tokenizer_base import TokenizerRegistry
+        tokenizer = TokenizerRegistry.get_tokenizer(str(tokenizer_name),
+                                                    *args,
+                                                    revision=revision,
+                                                    download_dir=download_dir,
+                                                    **kwargs)
+    else:
+        # 默认模式，执行自定义代码，从huggingface获取tokenizer
+        try:
+            tokenizer = AutoTokenizer.from_pretrained(
+                tokenizer_name,
+                *args,
+                trust_remote_code=trust_remote_code,
+                revision=revision,
+                **kwargs,
+            )
+        except ValueError as e:
+            # If the error pertains to the tokenizer class not existing or not
+            # currently being imported,
+            # suggest using the --trust-remote-code flag.
+            if not trust_remote_code and (
+                    "does not exist or is not currently imported." in str(e)
+                    or "requires you to execute the tokenizer file" in str(e)):
+                err_msg = ("Failed to load the tokenizer. If the tokenizer "
+                           "is a custom tokenizer not yet available in the "
+                           "HuggingFace transformers library, consider "
+                           "setting `trust_remote_code=True` in LLM or using "
+                           "the `--trust-remote-code` flag in the CLI.")
+                raise RuntimeError(err_msg) from e
+            else:
+                raise e
+
+        # The special_tokens in tokenizer should also be
+        # controlled by do_lower_case in encoder_config
+        # 句子变换器通常将所有输入转换为小写，但特殊token可能保持原大小写。因此需要确保特殊token与文本处理方式一致
+        encoder_config = get_sentence_transformer_tokenizer_config(
+            tokenizer_name, revision)
+        if isinstance(encoder_config, dict) and encoder_config.get(
+                "do_lower_case", False):
+            special_tokens_map = {
+                k: v.lower()
+                for k, v in tokenizer.special_tokens_map.items()
+            }
+            tokenizer.add_special_tokens(special_tokens_map)
+
+        # NOTE: We can remove this after https://github.com/zai-org/ChatGLM3/issues/1324
+        # ChatGLM 分词器默认 padding_side="right"，但 VLLM 需要 padding_side="left"。因此patch_padding_side 函数会将padding方向改为 left
+        if type(tokenizer).__name__ in ("ChatGLMTokenizer",
+                                        "ChatGLM4Tokenizer"):
+            assert isinstance(tokenizer, PreTrainedTokenizer)
+            patch_padding_side(tokenizer)
+        
+        # 在高速推理场景下，慢速分词器可能降低整体吞吐量 30-50%。不是快速tokenizer则给出警告
+        if not isinstance(tokenizer, PreTrainedTokenizerFast):
+            logger.warning(
+                "Using a slow tokenizer. This might cause a significant "
+                "slowdown. Consider using a fast tokenizer instead.")
+        # 缓存分词器实例，避免重复加载相同配置的分词器
+        tokenizer = get_cached_tokenizer(tokenizer)
+
+    return tokenizer
+
+```
+<img width="701" height="928" alt="image" src="https://github.com/user-attachments/assets/6c97621e-852a-4dbb-8495-318f93aafa62" />
+
++ 多源加载：从 HuggingFace、ModelScope 或本地文件加载分词器
++ 模式适配：支持不同特化的分词模式（slow/fast/mistral/custom）
++ 配置优化：自动设置截断方向、缓存策略等关键参数
++ 错误处理：提供清晰的错误提示和修复建议
+
+
+## 2.2 update_from_generation_config
 **源码**
 
 ```python
