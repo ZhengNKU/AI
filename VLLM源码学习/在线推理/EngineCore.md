@@ -259,7 +259,9 @@ async def add_request_async(self, request: EngineCoreRequest) -> None:
 <img width="762" height="233" alt="image" src="https://github.com/user-attachments/assets/80fcaa7b-620e-4e2e-b41b-f1106253c3fd" />
 
 ## 2.1 _ensure_stats_update_task
-<details> <summary>源码</summary>
+<details> 
+    <summary>源码</summary>
+    
     ```python
     def _ensure_stats_update_task(self):
     resources = self.resources
