@@ -1,9 +1,10 @@
-**EntryPoints**:
+**EntryPoints:**
+
 离线批量推理：vllm/entrypoints/api_server.py 或 LLM.generate()（vllm/llm.py）
 
 在线服务：vllm/entrypoints/openai/api_server.py（启动 OpenAI 兼容 API）
 
-整体架构：
+**整体架构：**
 
 主进程 (Master Process)：运行 LLMEngine/AsyncLLMEngine、Scheduler、Processor 和 APIServer。它是控制中心。
 
