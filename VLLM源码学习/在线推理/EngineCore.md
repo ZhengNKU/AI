@@ -219,6 +219,210 @@ N个客户端进程 ↔ N个引擎进程（一对一）。每个客户端实例�
 + 如果收到 abort(request_id) 指令，客户端会查找 reqs_in_flight 找到对应的 engine_id，然后向那个特定的引擎发送中止命令。
 
 
+# 2. MPClient转发请求
+
+**调用链**
+
+/v1/chat/completions -> create_chat_completion -> self.engine_client.generate(不使用beam search) -> generate(async_llm.py) -> add_request -> _add_request -> add_request_async
+
+<img width="1279" height="918" alt="image" src="https://github.com/user-attachments/assets/c8aa40f7-46c7-4966-a402-75923d057c15" />
+
+**源码**
+
+```python
+await self.engine_core.add_request_async(request)
+
+async def add_request_async(self, request: EngineCoreRequest) -> None:
+    # 确保统计更新任务运行，详见2.1
+    self._ensure_stats_update_task()
+    
+    # 为请求添加元数据，包括当前波次标识和客户端索引标识
+    request.current_wave = self.current_wave
+    request.client_index = self.client_index
+    
+    # engine选择策略，详见2.2
+    chosen_engine = self.get_core_engine_for_request(request)
+    # 异步发送ADD类型的请求到选定的引擎，返回一个可等待对象。
+    to_await = self._send_input(EngineCoreRequestType.ADD, request,
+                                chosen_engine)
+    if not self.engines_running:
+        # 当引擎尚未运行时，通过ZMQ通知apiserver启动引擎进程
+        # Notify coordinator that we're sending a request
+        req_msg = msgspec.msgpack.encode(("FIRST_REQ", chosen_engine))
+        await self.first_req_send_socket.send(req_msg)
+
+    await to_await
+    
+    # 创建一个输出队列处理任务EngineCoreOutputQueueTask，负责异步接收和处理来自engineCore的输出结果
+    self._ensure_output_queue_task()
+```
+<img width="762" height="233" alt="image" src="https://github.com/user-attachments/assets/80fcaa7b-620e-4e2e-b41b-f1106253c3fd" />
+
+## 2.1 _ensure_stats_update_task
+<details> <summary>源码</summary>
+    ```python
+    def _ensure_stats_update_task(self):
+    resources = self.resources
+    # 任务已存在，直接返回
+    if resources.stats_update_task is not None:
+        return
+
+    assert self.stats_update_address is not None
+    assert len(self.engine_ranks_managed) > 0
+    # NOTE: running and waiting counts are all global from
+    # the Coordinator include all global EngineCores. This
+    # slice includes just the cores managed by this client.
+    count_slice = slice(self.engine_ranks_managed[0],
+                        self.engine_ranks_managed[-1] + 1)
+
+    async def run_engine_stats_update_task():
+        # 创建两个ZMQ套接字。
+        # XSUB用于接收套接字,既能接收来自PUB/XPUB的消息,也能发送消息给XPUB。订阅协调器的状态广播
+        # PAIR套接字，全双工通信
+        with (make_zmq_socket(self.ctx,
+                              self.stats_update_address,
+                              zmq.XSUB,
+                              linger=0) as socket,
+              make_zmq_socket(self.ctx,
+                              self.first_req_sock_addr,
+                              zmq.PAIR,
+                              bind=False,
+                              linger=0) as first_req_rcv_socket):
+            assert isinstance(socket, zmq.asyncio.Socket)
+            assert isinstance(first_req_rcv_socket, zmq.asyncio.Socket)
+            self.resources.stats_update_socket = socket
+            self.resources.first_req_rcv_socket = first_req_rcv_socket
+            # Send subscription message.
+            # 发送订阅消息
+            await socket.send(b'\x01')
+            
+            poller = zmq.asyncio.Poller()
+            poller.register(socket, zmq.POLLIN) 
+            # 首次请求/扩缩容
+            poller.register(first_req_rcv_socket, zmq.POLLIN)
+
+            while True:
+                events = await poller.poll()
+                if not self.engines_running and len(events) == 2 or (
+                        events[0][0] == first_req_rcv_socket):
+                    # Check if this is a regular request notification or
+                    # scale up notification
+                    # 通过PAIR套接字接收扩缩容指令
+                    buf = first_req_rcv_socket.recv(
+                        flags=zmq.NOBLOCK).result()
+
+                    decoded = msgspec.msgpack.decode(buf)
+                    # 弹性扩缩容处理
+                    if isinstance(
+                            decoded,
+                        (list, tuple)) and len(decoded) == 2 and decoded[
+                            0] == "SCALE_ELASTIC_EP":
+                        # Extract new engine count from the decoded message
+                        # 获取新引擎数量
+                        new_engine_count = decoded[1] 
+                        # Send scale up notification to coordinator
+                        # 通过XSUB套接字转发扩缩容消息给协调器
+                        scale_msg = msgspec.msgpack.encode(
+                            ("SCALE_ELASTIC_EP", new_engine_count))
+                        await socket.send(scale_msg)
+                        continue
+
+                    # we're sending a request while the engines are
+                    # paused, so that it can wake the others up
+                    # (to run dummy EP loop).
+                    # 首次请求标记引擎已启动，通知协调器目标引擎信息
+                    assert decoded[0] == "FIRST_REQ"
+                    target_eng_index = decoded[1]
+                    self.engines_running = True
+                    msg = msgspec.msgpack.encode(
+                        (target_eng_index, self.current_wave))
+                    await socket.send(msg)
+
+                buf = None
+                while True:
+                    # Drain all stats events (we only care about latest).
+                    # 清空所有待处理状态消息（只关心最新状态）
+                    future: asyncio.Future[bytes] = socket.recv(
+                        flags=zmq.NOBLOCK)
+                    if isinstance(future.exception(), zmq.Again):
+                        break
+                    # 获取最新消息
+                    buf = future.result()
+                if buf is None:
+                    continue
+
+                # Update local load-balancing state.
+                # 更新负载均衡状态
+                counts, wave, running = msgspec.msgpack.decode(buf)
+                self.current_wave = wave
+                self.engines_running = running
+                if counts is not None:
+                    sliced_counts = counts[count_slice]
+                    self.lb_engines = sliced_counts
+                    logger.debug("Received counts: %s (%s)", sliced_counts,
+                                 count_slice)
+
+    resources.stats_update_task = asyncio.create_task(
+        run_engine_stats_update_task())
+    ```
+</details>
+
++ 订阅协调器状态广播
++ 监听首次请求和扩缩容通知
++ 处理扩缩容请求并转发
++ 更新本地负载均衡状态
++ 持续循环保持状态同步
+
+**扩缩容：**
+
+系统不是固定数量的引擎，而是根据负载动态调整：
+
+扩容（Scale Up）: 当负载增加时启动更多引擎
+
+缩容（Scale Down）: 当负载减少时关闭闲置引擎
+
+## 2.2 get_core_engine_for_request ***
+
+**源码**
+
+```python
+def get_core_engine_for_request(
+        self, request: EngineCoreRequest) -> EngineIdentity:
+    # Engines are in rank order.
+    if (eng_index := request.data_parallel_rank) is None:
+        # 不是dp获取各引擎的负载状态
+        current_counts = self.lb_engines
+        # TODO use P2C alg for larger DP sizes
+        num_engines = len(current_counts)
+        min_score = sys.maxsize
+        eng_index = 0
+        # 负载均衡算法
+        for i in range(num_engines):
+            # Start from client_index to help with balancing when engines
+            # are empty.
+            idx = (self.eng_start_index + i) % num_engines  # 轮询起始点，确保多个客户端从不同位置开始，避免所有客户端同时选择同一个"最优"引擎
+            waiting, running = current_counts[idx]  # 获取等待数和运行数
+            score = waiting * 4 + running  # 加权评分算法
+            if score < min_score:
+                min_score = score
+                eng_index = idx
+        # Increment local waiting count for better balancing between stats
+        # updates from the coordinator (which happen every 100ms).
+        # 临时增加等待计数，在协调器状态更新间隔期间保持负载均衡
+        current_counts[eng_index][0] += self.client_count  
+    
+    # 如果是数据并行(dp)，则直接指定engine
+    chosen_engine = self.core_engines[eng_index]
+    # Record which engine is chosen for this request, to handle aborts.
+    self.reqs_in_flight[request.request_id] = chosen_engine
+    return chosen_engine
+```
+
+整体功能：根据请求特性和引擎当前负载，选择最优的引擎来处理请求。
+
+（1）如果是数据并行(dp)，则根据engine_ranks_managed直接指定engine
+
+（2）如果不是dp，需要自己实现负载均衡，算法：score = waiting * 4 + running。等待队列的权重是运行任务的4倍，避免队列堆积比减少运行任务更重要
 
 
 
