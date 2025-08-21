@@ -3,6 +3,13 @@
 
 在线服务：vllm/entrypoints/openai/api_server.py（启动 OpenAI 兼容 API）
 
+整体架构：
+
+主进程 (Master Process)：运行 LLMEngine/AsyncLLMEngine、Scheduler、Processor 和 APIServer。它是控制中心。
+
+工作进程 (Worker Processes)：通过 Ray 或 PyTorch MPI 启动。它们负责实际的模型加载和 GPU 计算。
+
+<img width="937" height="589" alt="image" src="https://github.com/user-attachments/assets/acad3f64-435d-46e7-abb1-144a251d2f0a" />
 
 # 1. 在线服务
 参考链接：https://zhuanlan.zhihu.com/p/1896477903434258024 
@@ -217,6 +224,96 @@ async def create_chat_completion(request: ChatCompletionRequest,
 
 <img width="6639" height="4932" alt="image" src="https://github.com/user-attachments/assets/0a1e6e5c-d487-47b0-b6d2-0295247c46d6" />
 
+#### 2.1.1.1 核心方法add_request
+**调用链**
+
+generator -> add_request
+
+**源码**
+
+```python
+async def add_request(
+    self,
+    request_id: str,
+    prompt: PromptType,
+    params: Union[SamplingParams, PoolingParams],
+    arrival_time: Optional[float] = None,
+    lora_request: Optional[LoRARequest] = None,
+    tokenization_kwargs: Optional[dict[str, Any]] = None,
+    trace_headers: Optional[Mapping[str, str]] = None,
+    priority: int = 0,
+    data_parallel_rank: Optional[int] = None,
+) -> RequestOutputCollector:
+    """Add new request to the AsyncLLM."""
+       
+    if self.errored:
+        raise EngineDeadError()
+
+    is_pooling = isinstance(params, PoolingParams)
+    
+    # Create a new output collector for the request.
+    # 创建输出收集器
+    queue = RequestOutputCollector(output_kind=params.output_kind)
+
+    # Convert Input --> Request.
+    # 预处理，转换输入为EngineCoreRequest
+    prompt_str, request = self.processor.process_inputs(
+        request_id, prompt, params, arrival_time, lora_request,
+        tokenization_kwargs, trace_headers, priority, data_parallel_rank)
+    
+    # 池化任务且参数唯一，代表只需要一个输出，则直接发给OutputProcessor和EngineCore
+    if is_pooling or params.n == 1:
+        await self._add_request(request, prompt_str, None, 0, queue)
+        return queue
+
+    # Fan out child requests (for n>1).
+    # 管理一个用户请求（对应 n>1）及其所有子请求的生命周期和输出。将所有请求发给OutputProcessor和EngineCore
+    parent_request = ParentRequest(request_id, params)
+    for idx in range(params.n):
+        request_id, params = parent_request.get_child_info(idx)
+        child_request = request if idx == params.n - 1 else copy(request)
+        child_request.request_id = request_id
+        child_request.sampling_params = params
+        await self._add_request(child_request, prompt_str, parent_request,
+                                idx, queue)
+    return queue
+```
+
+```python
+async def _add_request(self, request: EngineCoreRequest,
+                       prompt: Optional[str],
+                       parent_req: Optional[ParentRequest], index: int,
+                       queue: RequestOutputCollector):
+
+    # Add the request to OutputProcessor (this process).
+    self.output_processor.add_request(request, prompt, parent_req, index,
+                                      queue)
+
+    # Add the EngineCoreRequest to EngineCore (separate process).
+    await self.engine_core.add_request_async(request)
+
+    if self.log_requests:
+        logger.info("Added request %s.", request.request_id)
+```
+
+**1. RequestOutputCollector 的作用**
+
+它是一个生产者-消费者模型中的缓冲区或队列。
+
+生产者：调度器/工作进程生成 token 或 embedding。
+
+消费者：API 服务器从其中读取数据并发送给客户端。
+
+它充当了异步生成器，允许结果在可用时立即被送出，而不必等待整个请求完全处理完毕。
+
+**2. output_kind=params.output_kind 参数**
+
+这个参数至关重要，它告诉收集器应该收集和输出什么类型的数据。OutputKind 是一个枚举，常见值包括：
+
++ FINAL_ONLY：仅返回最终结果。对于生成任务，就是完整的生成文本；对于池化任务，就是最终的嵌入向量。不流式传输。
++ TOKENS：流式返回每一个新生成的 token。这是用于 ChatGPT 那种逐字打印效果的关键参数。
++ LOGPROBS：流式返回 token 及其对数概率。
++ SPECIAL：用于其他特殊类型的输出。
 
 
 
