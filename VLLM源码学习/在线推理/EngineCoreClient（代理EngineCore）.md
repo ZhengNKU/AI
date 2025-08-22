@@ -233,16 +233,16 @@ N个客户端进程 ↔ N个引擎进程（一对一）。每个客户端实例�
 await self.engine_core.add_request_async(request)
 
 async def add_request_async(self, request: EngineCoreRequest) -> None:
-    # 确保统计更新任务运行，详见2.1
+    # 确保统计更新任务运行，详见2.2
     self._ensure_stats_update_task()
     
     # 为请求添加元数据，包括当前波次标识和客户端索引标识
     request.current_wave = self.current_wave
     request.client_index = self.client_index
     
-    # engine选择策略，详见2.2
+    # engine选择策略，详见2.3
     chosen_engine = self.get_core_engine_for_request(request)
-    # 异步发送ADD类型的请求到选定的引擎，返回一个可等待对象。
+    # 异步发送ADD类型的请求到选定的引擎，返回一个可等待对象。详见2.1
     to_await = self._send_input(EngineCoreRequestType.ADD, request,
                                 chosen_engine)
     if not self.engines_running:
@@ -258,7 +258,43 @@ async def add_request_async(self, request: EngineCoreRequest) -> None:
 ```
 <img width="762" height="233" alt="image" src="https://github.com/user-attachments/assets/80fcaa7b-620e-4e2e-b41b-f1106253c3fd" />
 
-## 2.1 _ensure_stats_update_task
+## 2.1 _send_input请求转发到EngineCore
+**调用链**
+/v1/chat/completions -> create_chat_completion -> self.engine_client.generate(不使用beam search) -> generate(async_llm.py) -> add_request -> _add_request -> add_request_async 
+-> _send_input -> _send_input_message
+**源码**
+```python
+def _send_input_message(self, message: tuple[bytestr,
+                                             ...], engine: EngineIdentity,
+                        objects: Any) -> Awaitable[Any]:
+    """
+    objects is a reference to retain until zmq is finished with the
+    buffers, in case they were extracted from tensors in the request.
+    """
+    self.ensure_alive()
+    self.free_pending_messages()
+
+    msg = (engine, ) + message
+    if not objects or len(msg) <= 3:
+        # No auxiliary buffers => no tensor backing buffers in request.
+        return self.input_socket.send_multipart(msg, copy=False)
+
+    future: asyncio.Future[zmq.MessageTracker]
+    future = self.input_socket.send_multipart(msg, copy=False, track=True)
+
+    def add_pending(f: asyncio.Future[zmq.MessageTracker]):
+        with contextlib.suppress(BaseException):
+            self.add_pending_message(f.result(), objects)
+
+    future.add_done_callback(add_pending)
+    return future
+```
+
+通过input_socket批量发送请求给EngineCore
+
+
+
+## 2.3 _ensure_stats_update_task
 <details> 
     <summary>源码</summary>
     
