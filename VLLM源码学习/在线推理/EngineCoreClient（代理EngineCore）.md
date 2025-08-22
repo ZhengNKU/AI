@@ -260,9 +260,12 @@ async def add_request_async(self, request: EngineCoreRequest) -> None:
 
 ## 2.1 _send_input请求转发到EngineCore
 **调用链**
+
 /v1/chat/completions -> create_chat_completion -> self.engine_client.generate(不使用beam search) -> generate(async_llm.py) -> add_request -> _add_request -> add_request_async 
 -> _send_input -> _send_input_message
+
 **源码**
+
 ```python
 def _send_input_message(self, message: tuple[bytestr,
                                              ...], engine: EngineIdentity,
