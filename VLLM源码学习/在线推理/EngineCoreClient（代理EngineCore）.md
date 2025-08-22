@@ -1,4 +1,4 @@
-# 1. 启动独立进程make_async_mp_client
+# 1. api_server初始化EngineCoreClient
 **调用链**
 
 run_server ->  run_server_worker -> build_async_engine_client -> build_async_engine_client_from_engine_args -> AsyncLLM -> make_async_mp_client
@@ -183,40 +183,40 @@ class MPClient(EngineCoreClient):
 
 类名：AsyncMPClient
 
-1个客户端进程 ↔ 1个EngineCore进程
+1个ApiServer进程 ↔ 1个EngineCore进程
 
 **工作流程：**
 
-+ 客户端接收请求。
-+ 通过进程间通信（如 ZMQ）直接将请求发送给唯一的引擎进程。
-+ 从 outputs_queue 中读取该引擎的返回结果。
++ ApiServer接收请求。
++ 通过进程间通信（如 ZMQ）直接将请求发送给唯一的EngineCore进程。
++ 从 outputs_queue 中读取该EngineCore的返回结果。
 
 （2）多数据并行(Multiple Data Parallelism)且 存在外部负载均衡器。例如，使用 Kubernetes Service 或 NGINX 来分发请求
 
 类名：DPAsyncMPClient，继承AsyncMPClient
 
-N个客户端进程 ↔ N个引擎进程（一对一）。每个客户端实例只与一个特定的引擎副本通信。外部负载均衡器负责将请求路由到不同的客户端。
+N个ApiServer进程 ↔ N个EngineCore进程（一对一）。每个ApiServer实例只与一个特定的EngineCore副本通信。外部负载均衡器负责将请求路由到不同的ApiServer。
 
 **工作流程：**
 
 + 外部负载均衡器接收用户请求。
 + 外部LB根据其策略（轮询、最少连接等）将请求转发给众多 DPAsyncMPClient 实例中的一个。
-+ 该客户端实例将请求转发给它所专属的那个引擎副本。
++ 该ApiServer实例将请求转发给它所专属的那个EngineCore副本。
 + 从该副本获取结果并返回。
 
-（3）多数据并行但没有外部负载均衡器，需要客户端自己实现负载均衡
+（3）多数据并行但没有外部负载均衡器，需要ApiServer自己实现负载均衡
 
 类名：DPLBAsyncMPClient，继承DPAsyncMPClient
 
-1个客户端进程 ↔ N个引擎进程（一对多）。一个客户端实例知晓所有引擎副本，并负责决定将请求发送给谁。
+1个ApiServer进程 ↔ N个EngineCore进程（一对多）。一个ApiServer实例知晓所有EngineCore副本，并负责决定将请求发送给谁。
 
 **工作流程：**
 
-+ 客户端接收请求。
-+ 客户端根据负载均衡算法（如查看 lb_engines）选择一个最合适的引擎副本。
-+ 将请求发送给该引擎，并在 reqs_in_flight 中记录映射关系 {request_id: engine_id}。
-+ 当该引擎返回结果后，从映射表中清除记录。
-+ 如果收到 abort(request_id) 指令，客户端会查找 reqs_in_flight 找到对应的 engine_id，然后向那个特定的引擎发送中止命令。
++ ApiServer接收请求。
++ ApiServer根据负载均衡算法（如查看 lb_engines）选择一个最合适的EngineCore副本。
++ 将请求发送给该EngineCore，并在reqs_in_flight中记录映射关系 {request_id: engine_id}。
++ 当该EngineCore返回结果后，从映射表中清除记录。
++ 如果收到abort(request_id)指令，客户端会查找reqs_in_flight找到对应的engine_id，然后向那个特定的EngineCore发送中止命令。
 
 
 # 2. MPClient转发请求
