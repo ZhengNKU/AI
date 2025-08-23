@@ -2,7 +2,7 @@
 
 **调用链**
 
-run_server ->  run_server_worker -> build_async_engine_client -> build_async_engine_client_from_engine_args -> AsyncLLM -> EngineCoreClient(基类) -> InprocClient -> EngineCore 
+run_server ->  run_server_worker -> build_async_engine_client -> build_async_engine_client_from_engine_args -> AsyncLLM -> make_async_mp_client -> DPAsyncMPClient -> AsyncMPClient(父类) -> MPClient(父类) -> launch_core_engines -> run_engine_core -> EngineCoreProc -> EngineCore 
 
 **源码**
 
