@@ -92,7 +92,7 @@ class MPClient(EngineCoreClient):
             self.stats_update_address: Optional[str] = None
           
             if client_addresses is not None:
-                # 连接外部引擎。使用提供的地址直接连接。这用于 DPAsyncMPClient 等场景，引擎由外部系统（如K8s）管理。
+                # 连接外部EngineCore。使用提供的地址直接连接。EngineCore由外部系统（如K8s）管理，需要外部再启动EngineCore实例。
                 # Engines are managed externally to this client.
                 input_address = client_addresses["input_address"]
                 output_address = client_addresses["output_address"]
@@ -100,7 +100,7 @@ class MPClient(EngineCoreClient):
                     "stats_update_address")
             else:
                 # Engines are managed by this client.
-                # 内部启动引擎。调用 launch_core_engines
+                # 内部启动EngineCore。调用 launch_core_engines。如果是将vllm镜像以pod形式部署，MPClient和EngineCore在一个pod内，属于内部EngineCore
                 with launch_core_engines(vllm_config, executor_class,
                                          log_stats) as (engine_manager,
                                                         coordinator,
@@ -118,7 +118,7 @@ class MPClient(EngineCoreClient):
 
             # Create input and output sockets.
             # ROUTER Socket (Input)：这是一个可以处理多个连接的先进Socket。它允许客户端通过指定的 identity 与多个引擎中的某一个进行通信。这是实现负载均衡的基础。
-            # PULL Socket (Output)：这是一个订阅/拉取Socket，用于从引擎接收输出消息。
+            # PULL Socket (Output)：这是一个订阅/拉取Socket，用于从EngineCore接收输出消息。
             self.input_socket = self.resources.input_socket = make_zmq_socket(
                 self.ctx, input_address, zmq.ROUTER, bind=True)
             self.resources.output_socket = make_zmq_socket(
@@ -134,6 +134,8 @@ class MPClient(EngineCoreClient):
             local_engines_only = (parallel_config.data_parallel_hybrid_lb
                                   or parallel_config.data_parallel_external_lb)
 
+            # 示例：两机，每机8卡，每机dp=4，tp=2
+            # dp_size: 总dp数量8，dp_local_size: 当前机器的dp数量4，local_engines_only: 是否是工作机器。多个机器的情况，需要选出一个调度机器（主机器），其余为工作机器。工作机器为true
             num_ranks = dp_local_size if local_engines_only else dp_size
             self.engine_ranks_managed = [dp_rank] if offline_mode else list(
                 range(dp_rank, dp_rank + num_ranks))
@@ -141,14 +143,14 @@ class MPClient(EngineCoreClient):
                 self.engine_ranks_managed)
 
             # ZMQ identity of each engine that this client will talk to.
-            # 为每个被管理的引擎创建一个唯一的身份标识（ZMQ Identity），通常就是它的rank。
+            # 为每个被管理的EngineCore创建一个唯一的身份标识（ZMQ Identity），通常就是它的rank。
             self.core_engines: list[EngineIdentity] = [
                 rank.to_bytes(2, "little")
                 for rank in self.engine_ranks_managed
             ]
 
             # Wait for ready messages from each engine on the input socket.
-            # 代码会等待所有引擎通过Input Socket发送一个初始消息（"ready"信号）。这确保了所有引擎进程都已成功启动并连接，客户端之后才开始发送实际请求。
+            # 代码会等待所有EngineCore通过Input Socket发送一个初始消息（"ready"信号）。这确保了所有EngineCore进程都已成功启动并连接，客户端之后才开始发送实际请求。
             identities = set(self.core_engines)
             sync_input_socket = zmq.Socket.shadow(self.input_socket)
             while identities:
@@ -167,14 +169,13 @@ class MPClient(EngineCoreClient):
             self.pending_messages = deque[tuple[zmq.MessageTracker, Any]]()
 
             # Start monitoring engine core processes for unexpected failures
-            # 启动一个后台线程，监控引擎进程的健康状态。如果某个引擎进程意外崩溃，客户端能够检测到并可能触发错误处理或重启机制。
+            # 启动一个后台线程，监控EngineCore进程的健康状态。如果某个EngineCore进程意外崩溃，客户端能够检测到并可能触发错误处理或重启机制。
             self.start_engine_core_monitor()
 
             success = True
         finally:
             if not success:
                 self._finalizer()
-
 ```
 <img width="679" height="1995" alt="image" src="https://github.com/user-attachments/assets/f3195ce1-7476-4da8-80aa-80d3b7aaf928" />
 
