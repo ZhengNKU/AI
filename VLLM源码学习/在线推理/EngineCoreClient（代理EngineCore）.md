@@ -135,7 +135,7 @@ class MPClient(EngineCoreClient):
                                   or parallel_config.data_parallel_external_lb)
 
             # 示例：两机，每机8卡，每机dp=4，tp=2
-            # dp_size: 总dp数量8，dp_local_size: 当前机器的dp数量4，local_engines_only: 是否是工作机器。多个机器的情况，需要选出一个调度机器（主机器, dp_size > 1 and not offline_mode and dp_rank == 0），其余为工作机器。工作机器为true
+            # dp_size: 总dp数量8，dp_local_size: 当前机器的dp数量4，local_engines_only: 是否是工作机器。多个机器的情况，需要选出一个调度机器（主机器, 即DP Coordinator，dp_size > 1 and not offline_mode and dp_rank == 0），其余为工作机器。工作机器为true
             num_ranks = dp_local_size if local_engines_only else dp_size
             self.engine_ranks_managed = [dp_rank] if offline_mode else list(
                 range(dp_rank, dp_rank + num_ranks))
