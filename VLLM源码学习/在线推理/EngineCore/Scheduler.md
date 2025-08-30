@@ -183,6 +183,7 @@ EngineCoreProc -> step -> schedule
 
 <details>
   <summary>源码</summary>
+    
   ```python
       def schedule(self) -> SchedulerOutput:
         # NOTE(woosuk) on the scheduling algorithm:
@@ -615,6 +616,7 @@ EngineCoreProc -> step -> schedule
         self._update_after_schedule(scheduler_output)
         return scheduler_output
     ```
+
 </details>
 
 
