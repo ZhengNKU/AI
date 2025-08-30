@@ -164,10 +164,15 @@ class Scheduler(SchedulerInterface):
         self.use_pp = self.parallel_config.pipeline_parallel_size > 1
 ```
 ✅ 请求管理: 完整的生命周期跟踪
+
 ✅ 资源约束: 基于实际限制的调度决策
+
 ✅ 多策略支持: 可配置的调度算法
+
 ✅ 高级功能: 多模态、推测解码支持
+
 ✅ 分布式就绪: KV传输和协调能力
+
 ✅ 性能优化: 缓存管理和流水线支持
 
 
